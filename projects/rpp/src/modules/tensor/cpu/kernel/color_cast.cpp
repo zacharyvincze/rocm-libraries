@@ -54,6 +54,29 @@ inline void compute_color_cast_24_host(__m256* p, __m256 pMul, __m256* pAdd) {
         _mm256_fmadd_ps(_mm256_sub_ps(p[2], pAdd[2]), pMul, pAdd[2]);  // color_cast adjustment Bs
 }
 
+// Single-channel (PLN1) variants: every register uses the same cast constant (rgbTensor[n].R,
+// per the op's PLN1 = "cast the lone channel with R" contract).
+
+inline void compute_color_cast_16_host(__m128* p, __m128 pMul, __m128 pAdd) {
+    p[0] = _mm_fmadd_ps(_mm_sub_ps(p[0], pAdd), pMul, pAdd);  // color_cast adjustment
+    p[1] = _mm_fmadd_ps(_mm_sub_ps(p[1], pAdd), pMul, pAdd);  // color_cast adjustment
+    p[2] = _mm_fmadd_ps(_mm_sub_ps(p[2], pAdd), pMul, pAdd);  // color_cast adjustment
+    p[3] = _mm_fmadd_ps(_mm_sub_ps(p[3], pAdd), pMul, pAdd);  // color_cast adjustment
+}
+
+inline void compute_color_cast_8_host(__m128* p, __m128 pMul, __m128 pAdd) {
+    p[0] = _mm_fmadd_ps(_mm_sub_ps(p[0], pAdd), pMul, pAdd);  // color_cast adjustment
+    p[1] = _mm_fmadd_ps(_mm_sub_ps(p[1], pAdd), pMul, pAdd);  // color_cast adjustment
+}
+
+inline void compute_color_cast_8_host(__m256* p, __m256 pMul, __m256 pAdd) {
+    p[0] = _mm256_fmadd_ps(_mm256_sub_ps(p[0], pAdd), pMul, pAdd);  // color_cast adjustment
+}
+
+inline void compute_color_cast_4_host(__m128* p, __m128 pMul, __m128 pAdd) {
+    p[0] = _mm_fmadd_ps(_mm_sub_ps(p[0], pAdd), pMul, pAdd);  // color_cast adjustment
+}
+
 RppStatus color_cast_u8_u8_host_tensor(Rpp8u* srcPtr, RpptDescPtr srcDescPtr, Rpp8u* dstPtr,
                                        RpptDescPtr dstDescPtr, RpptRGB* rgbTensor,
                                        Rpp32f* alphaTensor, RpptROIPtr roiTensorPtrSrc,
@@ -300,6 +323,44 @@ RppStatus color_cast_u8_u8_host_tensor(Rpp8u* srcPtr, RpptDescPtr srcDescPtr, Rp
                 dstPtrRowR += dstDescPtr->strides.hStride;
                 dstPtrRowG += dstDescPtr->strides.hStride;
                 dstPtrRowB += dstDescPtr->strides.hStride;
+            }
+        }
+
+        // Color Cast without fused output-layout toggle (NCHW -> NCHW) for 1 channel (PLN1) input
+        else if ((srcDescPtr->c == 1) && (srcDescPtr->layout == RpptLayout::NCHW) &&
+                 (dstDescPtr->layout == RpptLayout::NCHW)) {
+            Rpp32u alignedLength = (bufferLength / 16) * 16;
+
+            Rpp8u *srcPtrRow, *dstPtrRow;
+            srcPtrRow = srcPtrChannel;
+            dstPtrRow = dstPtrChannel;
+
+            for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp8u *srcPtrTemp, *dstPtrTemp;
+                srcPtrTemp = srcPtrRow;
+                dstPtrTemp = dstPtrRow;
+
+                int vectorLoopCount = 0;
+                for (; vectorLoopCount < alignedLength; vectorLoopCount += 16) {
+                    __m128 p[4];
+
+                    rpp_simd_load(rpp_load16_u8_to_f32, srcPtrTemp, p);    // simd loads
+                    compute_color_cast_16_host(p, pMul, pAdd[0]);          // color_cast adjustment
+                    rpp_simd_store(rpp_store16_f32_to_u8, dstPtrTemp, p);  // simd stores
+
+                    srcPtrTemp += 16;
+                    dstPtrTemp += 16;
+                }
+                for (; vectorLoopCount < bufferLength; vectorLoopCount++) {
+                    *dstPtrTemp = (Rpp8u)RPPPIXELCHECK(
+                        std::nearbyintf((alphaParam * (*srcPtrTemp - rParam)) + rParam));
+
+                    srcPtrTemp++;
+                    dstPtrTemp++;
+                }
+
+                srcPtrRow += srcDescPtr->strides.hStride;
+                dstPtrRow += dstDescPtr->strides.hStride;
             }
         }
     }
@@ -561,6 +622,45 @@ RppStatus color_cast_f32_f32_host_tensor(Rpp32f* srcPtr, RpptDescPtr srcDescPtr,
                 dstPtrRowR += srcDescPtr->strides.hStride;
                 dstPtrRowG += srcDescPtr->strides.hStride;
                 dstPtrRowB += srcDescPtr->strides.hStride;
+            }
+        }
+
+        // Color Cast without fused output-layout toggle (NCHW -> NCHW) for 1 channel (PLN1) input
+        else if ((srcDescPtr->c == 1) && (srcDescPtr->layout == RpptLayout::NCHW) &&
+                 (dstDescPtr->layout == RpptLayout::NCHW)) {
+            Rpp32u alignedLength = (bufferLength / 8) * 8;
+
+            Rpp32f *srcPtrRow, *dstPtrRow;
+            srcPtrRow = srcPtrChannel;
+            dstPtrRow = dstPtrChannel;
+
+            for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp32f *srcPtrTemp, *dstPtrTemp;
+                srcPtrTemp = srcPtrRow;
+                dstPtrTemp = dstPtrRow;
+
+                int vectorLoopCount = 0;
+                for (; vectorLoopCount < alignedLength; vectorLoopCount += 8) {
+                    __m128 p[2];
+
+                    rpp_simd_load(rpp_load8_f32_to_f32, srcPtrTemp, p);  // simd loads
+                    compute_color_cast_8_host(p, pMul, pAdd[0]);         // color_cast adjustment
+                    // boundary checks for f32
+                    rpp_pixel_check_0to1(p, 2);
+                    rpp_simd_store(rpp_store8_f32_to_f32, dstPtrTemp, p);  // simd stores
+
+                    srcPtrTemp += 8;
+                    dstPtrTemp += 8;
+                }
+                for (; vectorLoopCount < bufferLength; vectorLoopCount++) {
+                    *dstPtrTemp = RPPPIXELCHECKF32((alphaParam * (*srcPtrTemp - rParam)) + rParam);
+
+                    srcPtrTemp++;
+                    dstPtrTemp++;
+                }
+
+                srcPtrRow += srcDescPtr->strides.hStride;
+                dstPtrRow += dstDescPtr->strides.hStride;
             }
         }
     }
@@ -922,6 +1022,62 @@ RppStatus color_cast_f16_f16_host_tensor(Rpp16f* srcPtr, RpptDescPtr srcDescPtr,
                 dstPtrRowB += srcDescPtr->strides.hStride;
             }
         }
+
+        // Color Cast without fused output-layout toggle (NCHW -> NCHW) for 1 channel (PLN1) input
+        else if ((srcDescPtr->c == 1) && (srcDescPtr->layout == RpptLayout::NCHW) &&
+                 (dstDescPtr->layout == RpptLayout::NCHW)) {
+            Rpp16f *srcPtrRow, *dstPtrRow;
+            srcPtrRow = srcPtrChannel;
+            dstPtrRow = dstPtrChannel;
+
+            for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp16f *srcPtrTemp, *dstPtrTemp;
+                srcPtrTemp = srcPtrRow;
+                dstPtrTemp = dstPtrRow;
+
+                int vectorLoopCount = 0;
+                for (; vectorLoopCount < alignedLength;
+                     vectorLoopCount += vectorIncrementPerChannel) {
+#if __AVX2__
+                    __m256 p[1];
+
+                    rpp_simd_load(rpp_load8_f16_to_f32_avx, srcPtrTemp, p);  // simd loads
+                    compute_color_cast_8_host(p, pMul, pAdd[0]);  // color_cast adjustment
+                    // boundary checks for f16
+                    rpp_pixel_check_0to1(p, 1);
+                    rpp_simd_store(rpp_store8_f32_to_f16_avx, dstPtrTemp, p);  // simd stores
+#else
+                    Rpp32f srcPtrTemp_ps[4], dstPtrTemp_ps[4];
+
+                    for (int cnt = 0; cnt < 4; cnt++)
+                        *(srcPtrTemp_ps + cnt) = (Rpp32f) * (srcPtrTemp + cnt);
+
+                    __m128 p[1];
+
+                    rpp_simd_load(rpp_load4_f32_to_f32, srcPtrTemp_ps, p);  // simd loads
+                    compute_color_cast_4_host(p, pMul, pAdd[0]);  // color_cast adjustment
+                    // boundary checks for f16
+                    rpp_pixel_check_0to1(p, 1);
+                    rpp_simd_store(rpp_store4_f32_to_f32, dstPtrTemp_ps, p);  // simd stores
+
+                    for (int cnt = 0; cnt < 4; cnt++)
+                        *(dstPtrTemp + cnt) = (Rpp16f) * (dstPtrTemp_ps + cnt);
+#endif
+                    srcPtrTemp += vectorIncrementPerChannel;
+                    dstPtrTemp += vectorIncrementPerChannel;
+                }
+                for (; vectorLoopCount < bufferLength; vectorLoopCount++) {
+                    *dstPtrTemp =
+                        (Rpp16f)RPPPIXELCHECKF32((alphaParam * (*srcPtrTemp - rParam)) + rParam);
+
+                    srcPtrTemp++;
+                    dstPtrTemp++;
+                }
+
+                srcPtrRow += srcDescPtr->strides.hStride;
+                dstPtrRow += dstDescPtr->strides.hStride;
+            }
+        }
     }
 
     return RPP_SUCCESS;
@@ -1193,6 +1349,46 @@ RppStatus color_cast_i8_i8_host_tensor(Rpp8s* srcPtr, RpptDescPtr srcDescPtr, Rp
                 dstPtrRowR += dstDescPtr->strides.hStride;
                 dstPtrRowG += dstDescPtr->strides.hStride;
                 dstPtrRowB += dstDescPtr->strides.hStride;
+            }
+        }
+
+        // Color Cast without fused output-layout toggle (NCHW -> NCHW) for 1 channel (PLN1) input
+        else if ((srcDescPtr->c == 1) && (srcDescPtr->layout == RpptLayout::NCHW) &&
+                 (dstDescPtr->layout == RpptLayout::NCHW)) {
+            Rpp32u alignedLength = (bufferLength / 16) * 16;
+
+            Rpp8s *srcPtrRow, *dstPtrRow;
+            srcPtrRow = srcPtrChannel;
+            dstPtrRow = dstPtrChannel;
+
+            for (int i = 0; i < roi.xywhROI.roiHeight; i++) {
+                Rpp8s *srcPtrTemp, *dstPtrTemp;
+                srcPtrTemp = srcPtrRow;
+                dstPtrTemp = dstPtrRow;
+
+                int vectorLoopCount = 0;
+                for (; vectorLoopCount < alignedLength; vectorLoopCount += 16) {
+                    __m128 p[4];
+
+                    rpp_simd_load(rpp_load16_i8_to_f32, srcPtrTemp, p);    // simd loads
+                    compute_color_cast_16_host(p, pMul, pAdd[0]);          // color_cast adjustment
+                    rpp_simd_store(rpp_store16_f32_to_i8, dstPtrTemp, p);  // simd stores
+
+                    srcPtrTemp += 16;
+                    dstPtrTemp += 16;
+                }
+                for (; vectorLoopCount < bufferLength; vectorLoopCount++) {
+                    Rpp32f srcPtrTempI8 = (Rpp32f)*srcPtrTemp + 128;
+
+                    *dstPtrTemp = (Rpp8s)RPPPIXELCHECKI8(
+                        std::nearbyintf((alphaParam * (srcPtrTempI8 - rParam)) + rParam) - 128);
+
+                    srcPtrTemp++;
+                    dstPtrTemp++;
+                }
+
+                srcPtrRow += srcDescPtr->strides.hStride;
+                dstPtrRow += dstDescPtr->strides.hStride;
             }
         }
     }
