@@ -115,13 +115,12 @@ TEST_P(ColorCastTest, Correctness) {
     }
 }
 
-// Restricted to the 3-channel layouts: color_cast applies distinct R/G/B constants, and the
-// kernel rejects 1-channel input with an error despite the header documenting c = 1/3 (a
-// doc/kernel discrepancy).
+// PLN1 (1-channel/greyscale) casts the lone channel using the R constant, per
+// color_cast_reference's rgb[c] contract (see color_cast_ref.hpp).
 INSTANTIATE_TEST_SUITE_P(
     Image_Color, ColorCastTest,
     ::testing::ValuesIn(with_params<ColorCastParams>(
         make_configs({DType::U8, DType::F16, DType::F32, DType::I8},
-                     {Layout::PKD3, Layout::PLN3}, {Roi::Full, Roi::Partial}),
+                     {Layout::PKD3, Layout::PLN3, Layout::PLN1}, {Roi::Full, Roi::Partial}),
         {ColorCastParams{0.6f, 30, 90, 150}})),
     op_config_name<ColorCastParams>);
